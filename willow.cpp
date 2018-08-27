@@ -1,24 +1,32 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <memory.h>
 #include <sdl.h>
 #include <SDL_ttf.h>
 
 #define ARRAY_COUNT(x) (sizeof((x))/(sizeof((x)[0])))
 
-int screen_width = 800;
-int screen_height = 600;
+#include "buffer.cpp"
+
+static int screen_width = 800;
+static int screen_height = 600;
+static int tab_width = 4;
 
 struct State {
 	bool quit;
 	TTF_Font* font;
 	SDL_Renderer* renderer;
+	GapBuffer* curr_buf;
 };
 
-void log_sdl_error(const char* msg)
+static void log_sdl_error(const char* msg)
 {
 	printf("%s error: %s\n", msg, SDL_GetError());
 }
 
-void render_texture(SDL_Texture *tex, SDL_Renderer *ren, int x, int y)
+static void render_texture(SDL_Texture *tex, SDL_Renderer *ren, int x, int y)
 {
 	SDL_Rect dst;
 	dst.x = x;
@@ -27,13 +35,40 @@ void render_texture(SDL_Texture *tex, SDL_Renderer *ren, int x, int y)
 	SDL_RenderCopy(ren, tex, 0, &dst);
 }
 
-void render_screen(State* state)
+static char* get_displayed_text(State* state)
+{
+	// TODO(scott): determine max amount of chars that could be 
+	// displayed dynamically and resize based on that
+	char* result = (char*)malloc(4096);
+	// protect against empty buffer
+	result[0] = 0;
+
+	char* ptr = result;
+	size_t len = state->curr_buf->gap_start - state->curr_buf->buffer_start;
+	strncpy(ptr, state->curr_buf->buffer_start, len);
+	ptr += len;
+	len = state->curr_buf->buffer_end - state->curr_buf->gap_end;
+	strncpy(ptr, state->curr_buf->gap_end, len);
+	ptr += len;
+	*ptr = 0;
+	return result;
+}
+
+static void render_screen(State* state)
 {	
 	//We need to first render to a surface as that's what TTF_RenderText
 	//returns, then load that surface into a texture
 	SDL_Color color = { 255, 255, 255, 255 };
-	char* message = "Hello world!!!";
-	SDL_Surface *surf = TTF_RenderText_Blended(state->font, message, color);
+	char text[256]; 
+	char* end_of_line = NULL;
+	end_of_line = copy_next_line(state->curr_buf, text, ARRAY_COUNT(text), end_of_line);
+	while (end_of_line < state->curr_buf->buffer_end)
+	{
+		end_of_line++;
+		end_of_line = copy_next_line(state->curr_buf, text, ARRAY_COUNT(text), end_of_line);
+	}
+
+	SDL_Surface *surf = TTF_RenderText_Blended(state->font, text, color);
 	if (!surf) 
 	{
 		TTF_CloseFont(state->font);
@@ -57,9 +92,33 @@ void render_screen(State* state)
 	render_texture(texture, state->renderer, 0, 0);
 }
 
-void handle_input(State* state)
+static void handle_keydown(State* state, SDL_Keysym key)
+{
+	switch (key.sym)
+	{
+	case SDLK_TAB:
+		for (int i=0; i<tab_width; i++)
+			insert_char(state->curr_buf, ' ');
+		break;
+	case SDLK_RETURN:
+		insert_char(state->curr_buf, '\n');
+		break;
+	case SDLK_BACKSPACE:
+		remove_chars(state->curr_buf, -1);
+		break;
+	case SDLK_DELETE:
+		remove_chars(state->curr_buf, 1);
+		break;
+	default:
+		break;
+	}
+}
+
+
+static void handle_input(State* state)
 {
 	SDL_Event e;
+
 	while (SDL_PollEvent(&e))
 	{
 		if (e.type == SDL_QUIT)
@@ -68,7 +127,18 @@ void handle_input(State* state)
 		}
 		if (e.type == SDL_KEYDOWN)
 		{
-			state->quit = true;
+			handle_keydown(state, e.key.keysym);
+		}
+		if (e.type == SDL_TEXTINPUT)
+		{
+			char* c = e.text.text;
+			while (*c)
+			{
+				insert_char(state->curr_buf, *c++);
+			}
+		}
+		if (e.type == SDL_KEYUP)
+		{
 		}
 		if (e.type == SDL_MOUSEBUTTONDOWN)
 		{
@@ -77,7 +147,7 @@ void handle_input(State* state)
 	}
 }
 
-bool load_font(State* state, const char* font_name, int font_size)
+static bool load_font(State* state, const char* font_name, int font_size)
 {
 #ifdef _WIN32
 	const char* font_path = "c:\\windows\\fonts\\";
@@ -100,6 +170,8 @@ bool load_font(State* state, const char* font_name, int font_size)
 
 int main(int argc, char** argv)
 {
+	test_buffer();
+
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
 	{
 		log_sdl_error("SDL_Init");
@@ -134,10 +206,16 @@ int main(int argc, char** argv)
 		
 	if (!load_font(&state, "veramono", 16))
 	{
-		SDL_DestroyWindow(window);
-		SDL_Quit();
-		return 1;
+		if (!load_font(&state, "arial", 16))
+		{
+			SDL_DestroyWindow(window);
+			SDL_Quit();
+			return 1;
+		}
 	}
+
+	state.curr_buf = (GapBuffer*)malloc(sizeof(GapBuffer));
+	init_buffer(state.curr_buf);
 
 	while (!state.quit)
 	{
