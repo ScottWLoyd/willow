@@ -5,6 +5,7 @@ struct GapBuffer {
 	char* gap_start;
 	char* gap_end;
 	char* buffer_end;
+    char* file_name;
 };
 
 static void print_buffer(GapBuffer* buf)
@@ -12,11 +13,20 @@ static void print_buffer(GapBuffer* buf)
 	size_t len_first = buf->gap_start - buf->buffer_start;
 	size_t len_second = buf->buffer_end - buf->gap_end;
 	char* temp = (char*)malloc(len_first + len_second + 1);
-	strncpy(temp, buf->buffer_start, len_first);
-	strncpy(temp + len_first, buf->gap_end, len_second);
+    copy_string(temp, buf->buffer_start, len_first);
+    copy_string(temp + len_first, buf->gap_end, len_second);
 	temp[len_first + len_second] = 0;
 	printf("%s\n", temp);
 	free(temp);
+}
+
+static void assert_buffer_invariants(GapBuffer* buf)
+{
+    assert(buf->gap_start <= buf->gap_end);
+    assert(buf->buffer_start <= buf->gap_start);
+    assert(buf->gap_end <= buf->buffer_end);
+    assert(buf->point >= buf->buffer_start && buf->point <= buf->buffer_end);
+    assert(buf->point <= buf->gap_start || buf->point > buf->gap_end);
 }
 
 #define GAP_BUFFER_SIZE 2
@@ -30,12 +40,15 @@ static void init_buffer(GapBuffer* buf)
 	buf->point = buf->buffer_start;
 	buf->gap_start = buf->buffer_start;
 	buf->gap_end = buf->gap_start + GAP_BUFFER_GAP_SIZE;
-	*buf->buffer_start = 0;
+	*buf->buffer_start = 0; 
+    buf->file_name = 0;
+    assert_buffer_invariants(buf);
 }
 
 static void set_point(GapBuffer* buf, uint32_t index)
 {
 	buf->point = buf->buffer_start + index;
+    assert_buffer_invariants(buf);
 }
 
 static void move_gap(GapBuffer* buf)
@@ -54,6 +67,7 @@ static void move_gap(GapBuffer* buf)
 		buf->gap_start = buf->point;
 		buf->gap_end += chars_to_move;
 	}
+    assert_buffer_invariants(buf);
 }
 
 static void grow_gap(GapBuffer* buf)
@@ -67,6 +81,7 @@ static void grow_gap(GapBuffer* buf)
 	buf->point = buf->buffer_start + point_offset;
 	buf->gap_start = buf->buffer_start + gap_offset;
 	buf->gap_end = buf->gap_start + GAP_BUFFER_GAP_SIZE;
+    assert_buffer_invariants(buf);
 }
 
 static void insert_char(GapBuffer* buf, char c)
@@ -76,7 +91,7 @@ static void insert_char(GapBuffer* buf, char c)
 		move_gap(buf);
 	}
 
-	if (buf->gap_end - buf->gap_start == 0)
+	if (buf->gap_start == buf->gap_end)
 	{
 		grow_gap(buf);
 	}
@@ -85,6 +100,7 @@ static void insert_char(GapBuffer* buf, char c)
 	buf->point++;
 
 	print_buffer(buf);
+    assert_buffer_invariants(buf);
 }
 
 static void remove_chars(GapBuffer* buf, int dir)
@@ -113,8 +129,24 @@ static void remove_chars(GapBuffer* buf, int dir)
 	}
 
 	print_buffer(buf);
+    assert_buffer_invariants(buf);
 }
 
+static void move_point_column(GapBuffer* buf, int amount)
+{
+    buf->point += amount;
+    if (amount < 0 && buf->point > buf->gap_start && buf->point <= buf->gap_end)
+    {
+        buf->point = buf->gap_start - (buf->gap_end - buf->point);
+    }
+    else if (amount > 0 && buf->point > buf->gap_start && buf->point <= buf->gap_end)
+    {
+        buf->point = buf->gap_end + (buf->point - buf->gap_start);
+    }
+    assert_buffer_invariants(buf);
+}
+
+#if 0
 static char* copy_next_line(GapBuffer* buf, char* dest, size_t max_chars, char* start = NULL)
 {
 	if (start == NULL)
@@ -126,7 +158,7 @@ static char* copy_next_line(GapBuffer* buf, char* dest, size_t max_chars, char* 
 	while (*end && 
 		   end < buf->buffer_end && 
 		   *end != '\n' && 
-		   (end - start) < max_chars)
+		   (size_t)(end - start) < max_chars)
 		end++;
 
 	size_t len = 0;
@@ -146,6 +178,42 @@ static char* copy_next_line(GapBuffer* buf, char* dest, size_t max_chars, char* 
 	}
 	dest[len] = 0;
 	return end;
+}
+#endif
+
+static Vec2 get_point_location(GapBuffer* buf)
+{
+    int new_lines = 1;
+    char* ptr = buf->buffer_start;
+    char* start_of_line = ptr;
+    while (ptr < buf->point)
+    {
+        if (*ptr == '\r')
+        {
+            ptr++;
+        }
+        if (*ptr == '\n')
+        {
+            new_lines++;
+            start_of_line = ptr + 1;
+        }
+        ptr++;
+        if (ptr == buf->gap_start)
+        {
+            while (ptr++ <= buf->gap_end)
+                ;
+        }
+    }
+
+    int col = (int)(ptr - start_of_line) - 1;
+    if (start_of_line <= buf->gap_start && ptr > buf->gap_end)
+    {
+        col -= (int)(buf->gap_end - buf->gap_start);
+    }
+    Vec2 result = { new_lines, col };
+    printf("ptr pos: %d,%d\n", new_lines, col);
+
+    return result;
 }
 
 static void test_buffer(void)

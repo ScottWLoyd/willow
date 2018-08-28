@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,17 +9,50 @@
 
 #define ARRAY_COUNT(x) (sizeof((x))/(sizeof((x)[0])))
 
+inline void copy_string(char* dst, char* src, size_t count)
+{
+    while (count--)
+        *dst++ = *src++;
+}
+
+union Vec2 {
+    struct {
+        int x, y;
+    };
+    struct {
+        int line, col;
+    };
+};
+
+#include "platform.h"
 #include "buffer.cpp"
+
+#ifdef _WIN32
+#include "platform_win32.cpp"
+#else
+
+#endif
+
+SDL_Color ColorForeground = { 255, 255, 255, 255 };
+SDL_Color ColorBackground = { 0, 0, 0, 255 };
 
 static int screen_width = 800;
 static int screen_height = 600;
 static int tab_width = 4;
 
+struct CursorPos {
+    int line;
+    int col;
+    Vec2 screen_pos;
+};
+
 struct State {
 	bool quit;
 	TTF_Font* font;
+    int font_height;
 	SDL_Renderer* renderer;
 	GapBuffer* curr_buf;
+    CursorPos cursor_pos;
 };
 
 static void log_sdl_error(const char* msg)
@@ -45,10 +79,10 @@ static char* get_displayed_text(State* state)
 
 	char* ptr = result;
 	size_t len = state->curr_buf->gap_start - state->curr_buf->buffer_start;
-	strncpy(ptr, state->curr_buf->buffer_start, len);
+	copy_string(ptr, state->curr_buf->buffer_start, len);
 	ptr += len;
 	len = state->curr_buf->buffer_end - state->curr_buf->gap_end;
-	strncpy(ptr, state->curr_buf->gap_end, len);
+    copy_string(ptr, state->curr_buf->gap_end, len);
 	ptr += len;
 	*ptr = 0;
 	return result;
@@ -58,42 +92,91 @@ static void render_screen(State* state)
 {	
 	//We need to first render to a surface as that's what TTF_RenderText
 	//returns, then load that surface into a texture
-	SDL_Color color = { 255, 255, 255, 255 };
-	char text[256]; 
-	char* end_of_line = NULL;
-	end_of_line = copy_next_line(state->curr_buf, text, ARRAY_COUNT(text), end_of_line);
-	while (end_of_line < state->curr_buf->buffer_end)
-	{
-		end_of_line++;
-		end_of_line = copy_next_line(state->curr_buf, text, ARRAY_COUNT(text), end_of_line);
-	}
+    int y_inc = TTF_FontLineSkip(state->font);
 
-	SDL_Surface *surf = TTF_RenderText_Blended(state->font, text, color);
-	if (!surf) 
-	{
-		TTF_CloseFont(state->font);
-		log_sdl_error("TTF_RenderText");
-		return;
-	}
-	SDL_Texture *texture = SDL_CreateTextureFromSurface(state->renderer, surf);
-	if (!texture) 
-	{
-		log_sdl_error("CreateTexture");
-	}
-	//Clean up the surface and font
-	SDL_FreeSurface(surf);
+    char* text = get_displayed_text(state);
+    if (strlen(text) == 0)
+    {
+        return;
+    }
 
-	//Get the texture w/h so we can center it in the screen
-	int w, h;
-	SDL_QueryTexture(texture, NULL, NULL, &w, &h);
-	int x = screen_width / 2 - w / 2;
-	int y = screen_height / 2 - h / 2;
+    SDL_Surface *surf = TTF_RenderText_Blended_Wrapped(state->font, text, ColorForeground, screen_width);        
+    if (!surf)
+    {
+        TTF_CloseFont(state->font);
+        log_sdl_error("TTF_RenderText");
+        return;
+    }
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(state->renderer, surf);
+    if (!texture)
+    {
+        log_sdl_error("CreateTexture");
+    }
+    SDL_FreeSurface(surf);
+    render_texture(texture, state->renderer, 0, 0);
+    SDL_DestroyTexture(texture);
 
-	render_texture(texture, state->renderer, 0, 0);
+    /*
+     * Render the buffer information
+     */
+    sprintf(text, "(%d,%d)", state->cursor_pos.line, state->cursor_pos.col);
+    //surf = TTF_RenderText_Blended(state->font, text, ColorForeground);
+    surf = TTF_RenderText_Shaded(state->font, text, ColorBackground, ColorForeground);
+    if (!surf)
+    {
+        TTF_CloseFont(state->font);
+        log_sdl_error("TTF_RenderText");
+        return;
+    }
+    texture = SDL_CreateTextureFromSurface(state->renderer, surf);
+    if (!texture)
+    {
+        log_sdl_error("CreateTexture");
+    }
+    //Clean up the surface and font
+    SDL_FreeSurface(surf);
+    int w, h, x, y;
+    SDL_QueryTexture(texture, NULL, NULL, &w, &h);
+    x = 0;
+    y = screen_height - h;
+    render_texture(texture, state->renderer, x, y);
+    SDL_DestroyTexture(texture);
+}
+
+static void save_buffer(GapBuffer* buf, bool save_as = false)
+{
+    char* file_name = buf->file_name;
+    if (!file_name || save_as)
+    {
+       file_name = get_save_file_name();
+    }
+    if (file_name)
+    {
+        buf->file_name = file_name;
+        FILE* file = fopen(buf->file_name, "r");
+        char* ptr = buf->buffer_start;
+        while (*ptr)
+        {
+            if (ptr >= buf->gap_start && ptr <= buf->gap_end)
+                ptr++;
+#ifdef _WIN32
+            if (*ptr == '\n')
+            {
+                putc('\r', file);
+            }
+#endif
+            putc(*ptr, file);
+            ptr++;
+        }
+        fclose(file);
+    }
 }
 
 static void handle_keydown(State* state, SDL_Keysym key)
 {
+    bool shift_pressed = key.mod & KMOD_LSHIFT || key.mod & KMOD_RSHIFT;
+    bool ctrl_pressed = key.mod & KMOD_LCTRL || key.mod & KMOD_RCTRL;
+
 	switch (key.sym)
 	{
 	case SDLK_TAB:
@@ -109,6 +192,11 @@ static void handle_keydown(State* state, SDL_Keysym key)
 	case SDLK_DELETE:
 		remove_chars(state->curr_buf, 1);
 		break;
+    case SDLK_s:
+        if (ctrl_pressed)
+        {
+            save_buffer(state->curr_buf);
+        }
 	default:
 		break;
 	}
@@ -125,11 +213,11 @@ static void handle_input(State* state)
 		{
 			state->quit = true;
 		}
-		if (e.type == SDL_KEYDOWN)
+		else if (e.type == SDL_KEYDOWN)
 		{
 			handle_keydown(state, e.key.keysym);
 		}
-		if (e.type == SDL_TEXTINPUT)
+		else if (e.type == SDL_TEXTINPUT)
 		{
 			char* c = e.text.text;
 			while (*c)
@@ -137,13 +225,19 @@ static void handle_input(State* state)
 				insert_char(state->curr_buf, *c++);
 			}
 		}
-		if (e.type == SDL_KEYUP)
+		else if (e.type == SDL_KEYUP)
 		{
 		}
-		if (e.type == SDL_MOUSEBUTTONDOWN)
+		else if (e.type == SDL_MOUSEBUTTONDOWN)
 		{
-			state->quit = true;
 		}
+
+        if (e.type == SDL_KEYDOWN || e.type == SDL_TEXTINPUT)
+        {
+            Vec2 pos = get_point_location(state->curr_buf);
+            state->cursor_pos.line = pos.line;
+            state->cursor_pos.col = pos.col;
+        }
 	}
 }
 
@@ -164,6 +258,8 @@ static bool load_font(State* state, const char* font_name, int font_size)
 		log_sdl_error("TTF_OpenFont");
 		return false;
 	}
+
+    state->font_height = TTF_FontLineSkip(state->font);
 
 	return true;
 }
