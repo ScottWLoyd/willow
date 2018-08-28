@@ -152,8 +152,12 @@ static void save_buffer(GapBuffer* buf, bool save_as = false)
     }
     if (file_name)
     {
+		if (buf->file_name)
+		{
+			free(buf->file_name);
+		}
         buf->file_name = file_name;
-        FILE* file = fopen(buf->file_name, "r");
+        FILE* file = fopen(buf->file_name, "w");
         char* ptr = buf->buffer_start;
         while (*ptr)
         {
