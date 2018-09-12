@@ -5,7 +5,12 @@ struct GapBuffer {
 	char* gap_start;
 	char* gap_end;
 	char* buffer_end;
+};
+
+struct Session {
+    GapBuffer buffer;
     char* file_name;
+    bool dirty;
 };
 
 static void print_buffer(GapBuffer* buf)
@@ -41,8 +46,15 @@ static void init_buffer(GapBuffer* buf)
 	buf->gap_start = buf->buffer_start;
 	buf->gap_end = buf->gap_start + GAP_BUFFER_GAP_SIZE;
 	*buf->buffer_start = 0; 
-    buf->file_name = 0;
     assert_buffer_invariants(buf);
+}
+
+static void free_buffer(GapBuffer* buf)
+{
+    if (buf->buffer_start)
+    {
+        free(buf->buffer_start);
+    }
 }
 
 static void set_point(GapBuffer* buf, uint32_t index)
@@ -84,7 +96,7 @@ static void grow_gap(GapBuffer* buf)
     assert_buffer_invariants(buf);
 }
 
-static void insert_char(GapBuffer* buf, char c)
+static bool insert_char(GapBuffer* buf, char c)
 {
 	if (buf->point != buf->gap_start)
 	{
@@ -101,9 +113,10 @@ static void insert_char(GapBuffer* buf, char c)
 
 	print_buffer(buf);
     assert_buffer_invariants(buf);
+    return true;
 }
 
-static void remove_chars(GapBuffer* buf, int dir)
+static bool remove_chars(GapBuffer* buf, int dir)
 {
 	if (buf->point != buf->gap_start)
 	{
@@ -112,6 +125,11 @@ static void remove_chars(GapBuffer* buf, int dir)
 
 	if (dir > 0)
 	{
+        // At end of buffer - nothing to delete
+        if (buf->gap_end == buf->buffer_end)
+        {
+            return false;
+        }
 		buf->gap_end += dir;
 		if (buf->gap_end > buf->buffer_end)
 		{
@@ -120,6 +138,11 @@ static void remove_chars(GapBuffer* buf, int dir)
 	}
 	else
 	{
+        // At beginning of buffer - nothing to delete
+        if (buf->gap_start == buf->buffer_start)
+        {
+            return false;
+        }
 		buf->gap_start += dir;
 		if (buf->gap_start < buf->buffer_start)
 		{
@@ -130,6 +153,7 @@ static void remove_chars(GapBuffer* buf, int dir)
 
 	print_buffer(buf);
     assert_buffer_invariants(buf);
+    return true;
 }
 
 static void move_point_column(GapBuffer* buf, int amount)
@@ -145,41 +169,6 @@ static void move_point_column(GapBuffer* buf, int amount)
     }
     assert_buffer_invariants(buf);
 }
-
-#if 0
-static char* copy_next_line(GapBuffer* buf, char* dest, size_t max_chars, char* start = NULL)
-{
-	if (start == NULL)
-	{
-		start = buf->buffer_start;
-	}
-
-	char* end = start;
-	while (*end && 
-		   end < buf->buffer_end && 
-		   *end != '\n' && 
-		   (size_t)(end - start) < max_chars)
-		end++;
-
-	size_t len = 0;
-	if (start < buf->gap_start && end > buf->gap_end)
-	{
-		char* ptr = dest;
-		len = buf->gap_start - start;
-		memcpy(ptr, start, len);
-		ptr += len;
-		memcpy(ptr, buf->gap_end, end - buf->gap_end);
-		len += end - buf->gap_end;
-	}
-	else
-	{
-		len = end - start;
-		memcpy(dest, start, len);
-	}
-	dest[len] = 0;
-	return end;
-}
-#endif
 
 static Vec2 get_point_location(GapBuffer* buf)
 {
@@ -233,4 +222,5 @@ static void test_buffer(void)
 	insert_char(&b, 'l');
 	insert_char(&b, 'd');
 	insert_char(&b, '!');
+    free_buffer(&b);
 }

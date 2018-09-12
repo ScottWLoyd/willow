@@ -13,6 +13,7 @@ inline void copy_string(char* dst, char* src, size_t count)
 {
     while (count--)
         *dst++ = *src++;
+    *dst = 0;
 }
 
 union Vec2 {
@@ -51,8 +52,9 @@ struct State {
 	TTF_Font* font;
     int font_height;
 	SDL_Renderer* renderer;
-	GapBuffer* curr_buf;
-    CursorPos cursor_pos;
+    
+    CursorPos cursor_pos;    
+    Session* session;
 };
 
 static void log_sdl_error(const char* msg)
@@ -77,12 +79,13 @@ static char* get_displayed_text(State* state)
 	// protect against empty buffer
 	result[0] = 0;
 
+    GapBuffer* buf = &state->session->buffer;
 	char* ptr = result;
-	size_t len = state->curr_buf->gap_start - state->curr_buf->buffer_start;
-	copy_string(ptr, state->curr_buf->buffer_start, len);
+	size_t len = buf->gap_start - buf->buffer_start;
+	copy_string(ptr, buf->buffer_start, len);
 	ptr += len;
-	len = state->curr_buf->buffer_end - state->curr_buf->gap_end;
-    copy_string(ptr, state->curr_buf->gap_end, len);
+	len = buf->buffer_end - buf->gap_end;
+    copy_string(ptr, buf->gap_end, len);
 	ptr += len;
 	*ptr = 0;
 	return result;
@@ -143,37 +146,42 @@ static void render_screen(State* state)
     SDL_DestroyTexture(texture);
 }
 
-static void save_buffer(GapBuffer* buf, bool save_as = false)
+static void save_buffer(Session* session, bool save_as = false)
 {
-    char* file_name = buf->file_name;
-    if (!file_name || save_as)
+    GapBuffer* buf = &session->buffer;
+    bool never_saved = !session->file_name;
+    char* file_name = NULL;
+    if (never_saved || save_as)
     {
        file_name = get_save_file_name();
     }
-    if (file_name)
+    if (!session->dirty && (!file_name || strlen(file_name) == 0))
     {
-		if (buf->file_name)
-		{
-			free(buf->file_name);
-		}
-        buf->file_name = file_name;
-        FILE* file = fopen(buf->file_name, "w");
-        char* ptr = buf->buffer_start;
-        while (*ptr)
-        {
-            if (ptr >= buf->gap_start && ptr <= buf->gap_end)
-                ptr++;
-#ifdef _WIN32
-            if (*ptr == '\n')
-            {
-                putc('\r', file);
-            }
-#endif
-            putc(*ptr, file);
-            ptr++;
-        }
-        fclose(file);
+        return;
     }
+    
+	if (session->file_name && !never_saved)
+	{
+		free(session->file_name);
+	}
+    session->file_name = file_name;
+    FILE* file = fopen(session->file_name, "w");
+    // TODO(scott): add error handling
+    char* ptr = buf->buffer_start;
+    while (*ptr && ptr < buf->buffer_end)
+    {
+        if (ptr >= buf->gap_start && ptr <= buf->gap_end)
+            ptr++;
+#ifdef _WIN32
+        if (*ptr == '\n')
+        {
+            putc('\r', file);
+        }
+#endif
+        putc(*ptr, file);
+        ptr++;
+    }
+    fclose(file);
 }
 
 static void handle_keydown(State* state, SDL_Keysym key)
@@ -185,22 +193,30 @@ static void handle_keydown(State* state, SDL_Keysym key)
 	{
 	case SDLK_TAB:
 		for (int i=0; i<tab_width; i++)
-			insert_char(state->curr_buf, ' ');
+            state->session->dirty |= insert_char(&state->session->buffer, ' ');
 		break;
 	case SDLK_RETURN:
-		insert_char(state->curr_buf, '\n');
+        state->session->dirty |= insert_char(&state->session->buffer, '\n');
 		break;
 	case SDLK_BACKSPACE:
-		remove_chars(state->curr_buf, -1);
+        state->session->dirty |= remove_chars(&state->session->buffer, -1);
 		break;
 	case SDLK_DELETE:
-		remove_chars(state->curr_buf, 1);
+        state->session->dirty |= remove_chars(&state->session->buffer, 1);
 		break;
     case SDLK_s:
         if (ctrl_pressed)
         {
-            save_buffer(state->curr_buf);
+            if (shift_pressed)
+            {
+                save_buffer(state->session, true);
+            }
+            else
+            {
+                save_buffer(state->session);
+            }
         }
+        
 	default:
 		break;
 	}
@@ -226,7 +242,7 @@ static void handle_input(State* state)
 			char* c = e.text.text;
 			while (*c)
 			{
-				insert_char(state->curr_buf, *c++);
+				insert_char(&state->session->buffer, *c++);
 			}
 		}
 		else if (e.type == SDL_KEYUP)
@@ -238,7 +254,7 @@ static void handle_input(State* state)
 
         if (e.type == SDL_KEYDOWN || e.type == SDL_TEXTINPUT)
         {
-            Vec2 pos = get_point_location(state->curr_buf);
+            Vec2 pos = get_point_location(&state->session->buffer);
             state->cursor_pos.line = pos.line;
             state->cursor_pos.col = pos.col;
         }
@@ -266,6 +282,14 @@ static bool load_font(State* state, const char* font_name, int font_size)
     state->font_height = TTF_FontLineSkip(state->font);
 
 	return true;
+}
+
+static Session* new_session()
+{
+    Session* session = (Session*)malloc(sizeof(Session));
+    ZeroMemory(session, sizeof(Session));
+    init_buffer(&session->buffer);
+    return session;
 }
 
 int main(int argc, char** argv)
@@ -314,8 +338,7 @@ int main(int argc, char** argv)
 		}
 	}
 
-	state.curr_buf = (GapBuffer*)malloc(sizeof(GapBuffer));
-	init_buffer(state.curr_buf);
+    state.session = new_session();
 
 	while (!state.quit)
 	{
